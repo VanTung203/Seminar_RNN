@@ -1,12 +1,58 @@
 {
-    "RNN_Pretrained=True": {
-        "Accuracy": 0.3404255319148936,
-        "F1-score": 0.1693121693121693,
-        "Training_Time_Seconds": 3.579782009124756
+    "RNN_Unidirectional_Pretrained=True": {
+        "Accuracy": 0.3399014778325123,
+        "F1-score": 0.1691176470588235,
+        "Training_Time_Seconds": 3.1158268451690674,
+        "Config": {
+            "embedding_dim": 100,
+            "hidden_dim_per_direction": 128,
+            "num_rnn_layers": 1,
+            "is_bidirectional": false,
+            "use_pretrained": true,
+            "epochs": 10,
+            "lr": 0.01
+        }
     },
-    "RNN_Pretrained=False": {
-        "Accuracy": 0.3404255319148936,
-        "F1-score": 0.1693121693121693,
-        "Training_Time_Seconds": 1.648005723953247
+    "RNN_Unidirectional_Pretrained=False": {
+        "Accuracy": 0.33004926108374383,
+        "F1-score": 0.1654320987654321,
+        "Training_Time_Seconds": 1.8502070903778076,
+        "Config": {
+            "embedding_dim": 100,
+            "hidden_dim_per_direction": 128,
+            "num_rnn_layers": 1,
+            "is_bidirectional": false,
+            "use_pretrained": false,
+            "epochs": 10,
+            "lr": 0.01
+        }
+    },
+    "RNN_Bidirectional_Pretrained=True": {
+        "Accuracy": 0.6305418719211823,
+        "F1-score": 0.6241065627030539,
+        "Training_Time_Seconds": 3.4920926094055176,
+        "Config": {
+            "embedding_dim": 100,
+            "hidden_dim_per_direction": 128,
+            "num_rnn_layers": 1,
+            "is_bidirectional": true,
+            "use_pretrained": true,
+            "epochs": 10,
+            "lr": 0.01
+        }
+    },
+    "RNN_Bidirectional_Pretrained=False": {
+        "Accuracy": 0.8177339901477833,
+        "F1-score": 0.8176942898696081,
+        "Training_Time_Seconds": 3.6708223819732666,
+        "Config": {
+            "embedding_dim": 100,
+            "hidden_dim_per_direction": 128,
+            "num_rnn_layers": 1,
+            "is_bidirectional": true,
+            "use_pretrained": false,
+            "epochs": 10,
+            "lr": 0.01
+        }
     }
 }

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np # Cần cho việc load GloVe
 
-# --- Hàm tiện ích để load GloVe (cần có file GloVe) ---
+# --- Hàm tiện ích để load GloVe (giữ nguyên) ---
 def load_glove_embeddings(glove_file_path, word_to_idx, embedding_dim):
     """
     Tải GloVe embeddings và tạo ma trận trọng số.
@@ -30,140 +30,142 @@ def load_glove_embeddings(glove_file_path, word_to_idx, embedding_dim):
         print(f"Lỗi khi đọc file GloVe: {e}")
         return None
 
-
     vocab_size = len(word_to_idx)
-    # Khởi tạo ma trận embedding với zero (hoặc ngẫu nhiên nhỏ)
     embedding_matrix = np.zeros((vocab_size, embedding_dim))
-    # embedding_matrix = np.random.normal(scale=0.6, size=(vocab_size, embedding_dim)) # Khởi tạo ngẫu nhiên
-
     loaded_vectors = 0
     for word, i in word_to_idx.items():
         embedding_vector = embeddings_index.get(word)
         if embedding_vector is not None:
-            # Những từ có trong GloVe và trong vocab
             embedding_matrix[i] = embedding_vector
             loaded_vectors += 1
-        # Những từ không có trong GloVe (bao gồm <UNK>) sẽ là vector zero (hoặc ngẫu nhiên)
-        # <PAD> cũng sẽ là vector zero theo mặc định (nếu index của nó là 0)
-
     print(f"Tìm thấy {loaded_vectors}/{vocab_size} vector từ trong GloVe.")
     return torch.tensor(embedding_matrix, dtype=torch.float)
 
 
 class RNNModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim,
-                 pretrained=False, vocab_for_glove=None, glove_path=None, freeze_embedding=True):
+                 pretrained=False, vocab_for_glove=None, glove_path=None,
+                 freeze_embedding=True, is_bidirectional=False, num_rnn_layers=1): # Thêm is_bidirectional và num_rnn_layers
         super().__init__()
-        self.embedding_dim = embedding_dim # Lưu lại để dùng nếu GloVe không load được
+        self.embedding_dim = embedding_dim
+        self.is_bidirectional = is_bidirectional
+        self.num_rnn_layers = num_rnn_layers # Lưu số lớp RNN
 
         # --- Khởi tạo embedding layer ---
         if pretrained and vocab_for_glove is not None and glove_path is not None:
-            # Sử dụng GloVe nếu pretrained=True và có thông tin vocab + đường dẫn GloVe
             weights_matrix = load_glove_embeddings(glove_path, vocab_for_glove, embedding_dim)
             if weights_matrix is not None:
-                # num_embeddings phải bằng vocab_size, embedding_dim phải khớp với GloVe
                 self.embedding = nn.Embedding.from_pretrained(weights_matrix,
                                                               freeze=freeze_embedding,
                                                               padding_idx=vocab_for_glove.get('<PAD>', 0))
                 print("Đã khởi tạo Embedding layer với GloVe.")
             else:
-                # Nếu không load được GloVe, quay về học từ đầu
                 print("Không thể tải GloVe, Embedding layer sẽ được học từ đầu (scratch).")
                 self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=vocab_for_glove.get('<PAD>', 0))
         else:
-            # Học embedding từ đầu (Scratch)
-            # padding_idx=0 nếu <PAD> có index là 0 trong vocab
             default_padding_idx = 0
-            if vocab_for_glove: # Ưu tiên lấy từ vocab nếu có
+            if vocab_for_glove:
                 default_padding_idx = vocab_for_glove.get('<PAD>', 0)
+            elif vocab_size > 0 and '<PAD>' in getattr(self, 'vocab', {}): # Fallback nếu vocab được truyền vào model
+                 default_padding_idx = self.vocab.get('<PAD>', 0)
+
             self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=default_padding_idx)
-            if pretrained: # Nếu cờ pretrained=True nhưng không đủ thông tin để load GloVe
+            if pretrained:
                  print("Cờ pretrained=True nhưng không có vocab_for_glove hoặc glove_path. Embedding layer sẽ được học từ đầu (scratch).")
             else:
                 print("Đã khởi tạo Embedding layer để học từ đầu (scratch).")
 
-
         # --- Khởi tạo khối RNN layer ---
         # Yêu cầu: dùng nn.RNN với 128 hidden units, batch_first=True
-        # Input cho RNN là output của Embedding (embedding_dim)
         self.rnn = nn.RNN(input_size=embedding_dim,
-                          hidden_size=hidden_dim, # 128 hidden units
-                          num_layers=1,           # Đề bài không nói rõ số lớp, mặc định 1
-                          batch_first=True,       # Input/output có batch ở chiều đầu tiên
-                          bidirectional=False)    # Đề bài không yêu cầu bidirectional
+                          hidden_size=hidden_dim, # 128 hidden units cho mỗi chiều nếu bidirectional
+                          num_layers=self.num_rnn_layers, # Sử dụng số lớp RNN đã lưu
+                          batch_first=True,
+                          bidirectional=self.is_bidirectional) # Sử dụng cờ is_bidirectional
 
         # --- Khởi tạo tầng Dense để dự đoán 3 nhãn ---
-        # Input cho Dense là hidden state cuối cùng từ RNN (hidden_dim)
-        self.fc = nn.Linear(hidden_dim, output_dim) # output_dim là 3
+        # Input cho Dense là hidden state cuối cùng từ RNN
+        # Nếu bidirectional, hidden_dim được nhân đôi
+        fc_input_dim = hidden_dim * 2 if self.is_bidirectional else hidden_dim
+        self.fc = nn.Linear(fc_input_dim, output_dim)
 
     def forward(self, text):
         # text shape: (batch_size, seq_len)
-
-        # 1. Chuyển text thành embedding
-        # embedded shape: (batch_size, seq_len, embedding_dim)
         embedded = self.embedding(text)
+        # embedded shape: (batch_size, seq_len, embedding_dim)
 
-        # 2. Đưa qua khối RNN để lấy hidden state cuối
-        # rnn_output shape (batch_first=True): (batch_size, seq_len, hidden_dim)
+        # Đưa qua khối RNN
+        # rnn_output shape (batch_first=True): (batch_size, seq_len, hidden_dim * num_directions)
         # hidden_last shape: (num_layers * num_directions, batch_size, hidden_dim)
-        # Với nn.RNN, num_layers=1, num_directions=1 -> (1, batch_size, hidden_dim)
         rnn_output, hidden_last = self.rnn(embedded)
 
-        # Lấy hidden state của bước thời gian cuối cùng từ lớp RNN cuối cùng.
-        # Vì hidden_last có shape (1, batch_size, hidden_dim), ta cần squeeze chiều đầu tiên.
-        # Hoặc có thể lấy output của RNN tại step cuối cùng: rnn_output[:, -1, :]
-        # Tuy nhiên, với padding, hidden_last thường được ưu tiên hơn vì nó chứa thông tin tổng hợp
-        # của chuỗi thực sự (trước khi bị ảnh hưởng bởi padding nếu không dùng packed sequence).
-        # Trong trường hợp đơn giản này và không dùng packed sequence, lấy hidden_last là đủ.
-        final_hidden_state = hidden_last.squeeze(0) # Shape: (batch_size, hidden_dim)
+        if self.is_bidirectional:
+            # hidden_last shape: (num_layers * 2, batch_size, hidden_dim)
+            # Ghép hidden state cuối cùng của lớp RNN cuối cùng từ chiều xuôi và chiều ngược.
+            # hidden_last[-2,:,:] là fwd hidden của lớp cuối
+            # hidden_last[-1,:,:] là bwd hidden của lớp cuối
+            # Nếu num_layers = 1:
+            # hidden_last[0,:,:] là fwd hidden state cuối cùng
+            # hidden_last[1,:,:] là bwd hidden state cuối cùng (tương ứng với token đầu tiên của chuỗi ngược)
+            if self.num_rnn_layers == 1:
+                final_hidden_state = torch.cat((hidden_last[0, :, :], hidden_last[1, :, :]), dim=1)
+            else: # Cho trường hợp nhiều lớp RNN
+                 # Lấy hidden state của lớp cuối cùng, chiều xuôi và chiều ngược
+                fwd_final = hidden_last[-2,:,:] # Lớp cuối, chiều xuôi
+                bwd_final = hidden_last[-1,:,:] # Lớp cuối, chiều ngược
+                final_hidden_state = torch.cat((fwd_final, bwd_final), dim=1)
 
-        # 3. Đưa hidden state qua tầng Dense để dự đoán 3 nhãn
-        # predictions shape: (batch_size, output_dim)
+        else: # Unidirectional
+            # hidden_last shape: (num_layers * 1, batch_size, hidden_dim)
+            # Lấy hidden state của lớp cuối cùng
+            final_hidden_state = hidden_last[-1,:,:] # Tương đương hidden_last.squeeze(0) nếu num_layers=1
+
+        # final_hidden_state shape: (batch_size, hidden_dim * num_directions)
         predictions = self.fc(final_hidden_state)
+        # predictions shape: (batch_size, output_dim)
+        return predictions
 
-        return predictions # Trả về logits
-
-# Phần khởi tạo mô hình ví dụ ở cuối file model.py gốc không cần thiết nếu
-# việc khởi tạo được thực hiện trong train_eval.py
-# Tuy nhiên, để chạy thử file này độc lập, ta có thể làm như sau:
+# Ví dụ chạy thử (không thay đổi nhiều, chỉ thêm is_bidirectional)
 if __name__ == '__main__':
-    # Các giá trị này cần được lấy từ file data.py hoặc định nghĩa trước
-    # Giả sử vocab từ data.py đã được import hoặc tính toán ở đây
-    # Ví dụ (cần khớp với data.py):
-    example_vocab = {'<PAD>': 0, '<UNK>': 1, 'tôi': 2, 'đi':3, 'làm':4}
+    example_vocab = {'<PAD>': 0, '<UNK>': 1, 'tôi': 2, 'đi':3, 'làm':4, 'học':5, 'vui':6}
     vocab_size_example = len(example_vocab)
-    embedding_dim_example = 100 # Theo đề bài
-    hidden_dim_example = 128    # Theo đề bài
-    output_dim_example = 3      # Theo đề bài
+    embedding_dim_example = 100
+    hidden_dim_example = 128
+    output_dim_example = 3
+    glove_file_path_example = 'glove.6B.100d.txt' # Đảm bảo file này tồn tại
 
-    print("--- Thử nghiệm Scratch Model ---")
-    model_scratch = RNNModel(vocab_size=vocab_size_example,
-                             embedding_dim=embedding_dim_example,
-                             hidden_dim=hidden_dim_example,
-                             output_dim=output_dim_example,
-                             pretrained=False)
-    print(model_scratch)
+    print("--- Thử nghiệm Scratch Model (Unidirectional) ---")
+    model_scratch_uni = RNNModel(vocab_size=vocab_size_example, embedding_dim=embedding_dim_example,
+                                 hidden_dim=hidden_dim_example, output_dim=output_dim_example,
+                                 pretrained=False, is_bidirectional=False, num_rnn_layers=1)
+    print(model_scratch_uni)
 
-    print("\n--- Thử nghiệm Pretrained Model (cần file GloVe) ---")
-    # path
-    glove_file_path_example = 'glove.6B.100d.txt'
-    model_pretrained = RNNModel(vocab_size=vocab_size_example,
-                                embedding_dim=embedding_dim_example, # Phải khớp với GloVe dim
-                                hidden_dim=hidden_dim_example,
-                                output_dim=output_dim_example,
-                                pretrained=True,
-                                vocab_for_glove=example_vocab,
-                                glove_path=glove_file_path_example)
-    print(model_pretrained)
+    print("\n--- Thử nghiệm Scratch Model (Bidirectional) ---")
+    model_scratch_bi = RNNModel(vocab_size=vocab_size_example, embedding_dim=embedding_dim_example,
+                                hidden_dim=hidden_dim_example, output_dim=output_dim_example,
+                                pretrained=False, is_bidirectional=True, num_rnn_layers=1)
+    print(model_scratch_bi)
 
-    # Test thử với một batch giả định
+    print("\n--- Thử nghiệm Pretrained Model (Unidirectional, cần file GloVe) ---")
+    model_pretrained_uni = RNNModel(vocab_size=vocab_size_example, embedding_dim=embedding_dim_example,
+                                    hidden_dim=hidden_dim_example, output_dim=output_dim_example,
+                                    pretrained=True, vocab_for_glove=example_vocab,
+                                    glove_path=glove_file_path_example, is_bidirectional=False, num_rnn_layers=1)
+    print(model_pretrained_uni)
+
+    print("\n--- Thử nghiệm Pretrained Model (Bidirectional, cần file GloVe) ---")
+    model_pretrained_bi = RNNModel(vocab_size=vocab_size_example, embedding_dim=embedding_dim_example,
+                                   hidden_dim=hidden_dim_example, output_dim=output_dim_example,
+                                   pretrained=True, vocab_for_glove=example_vocab,
+                                   glove_path=glove_file_path_example, is_bidirectional=True, num_rnn_layers=1)
+    print(model_pretrained_bi)
+
     batch_size_test = 4
-    max_len_test = 10 # Giả sử max_len là 10 cho ví dụ này
+    max_len_test = 10
     dummy_input = torch.randint(0, vocab_size_example, (batch_size_test, max_len_test))
 
     with torch.no_grad():
-        output_logits_scratch = model_scratch(dummy_input)
-        output_logits_pretrained = model_pretrained(dummy_input)
-
-    print("\nOutput logits shape (Scratch):", output_logits_scratch.shape)
-    print("Output logits shape (Pretrained):", output_logits_pretrained.shape)
+        output_uni = model_scratch_uni(dummy_input)
+        output_bi = model_scratch_bi(dummy_input)
+    print("\nOutput logits shape (Scratch Uni):", output_uni.shape) # (4, 3)
+    print("Output logits shape (Scratch Bi):", output_bi.shape)   # (4, 3)
