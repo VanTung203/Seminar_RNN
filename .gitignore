@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE specific
+.idea/
+.vscode/
+
+# Data files / Large files (ví dụ)
+#*.csv
+glove.6B.100d.txt
+#results.json
+# Hoặc bất kỳ tệp lớn/tạm nào bạn không muốn đưa lên GitHub
+
+# OS specific
+.DS_Store
+Thumbs.db
